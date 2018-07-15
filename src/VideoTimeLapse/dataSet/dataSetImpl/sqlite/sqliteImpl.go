@@ -55,23 +55,6 @@ func (sqlds *SqliteDataStore)CreateDataStoreTables() error {
     camObj := new(sqlCamera)
     camObj.Camera = new(dataSet.Camera)
     camObj.CreateCameraTable(sqlds.DBConn)
-
-    camObj.Name = "camera1!"
-    camObj.Ipaddr = "10.0.0.1"
-    camObj.Port = "1234"
-    camObj.Desc = "wew"
-    camObj.Status = 1
-    //camObj.InsertCameraEntry(sqlds.DBConn)
-    //camObj.InsertCameraEntry(sqlds.DBConn)
-
-    camObj2 := new(sqlCamera)
-    camObj2.Camera = new(dataSet.Camera)
-    camObj2.Name = "camera"
-    camObj2.Ipaddr = "10.0.0.2"
-    camObj2.Port = "1234"
-    camObj2.Desc = "sdew blha"
-    camObj2.Status = 2
-    //camObj2.InsertCameraEntry(sqlds.DBConn)
     return nil
 }
 
@@ -82,10 +65,18 @@ func (sqlds *SqliteDataStore)AddNewCamera(camera *dataSet.Camera) error {
 }
 
 func (sqlds *SqliteDataStore)DeleteCamera(cameraName string) error {
-    return nil
+    camObj := new(sqlCamera)
+    camObj.Camera = new(dataSet.Camera)
+    camObj.Camera.Name = cameraName
+    return camObj.DeleteCameraEntry(sqlds.DBConn)
 }
+
+//User allowed to update all the fields in the camera db entry except the
+//name.
 func (sqlds *SqliteDataStore)UpdateCamera(camera *dataSet.Camera) error {
-    return nil
+    camObj := new(sqlCamera)
+    camObj.Camera = camera
+    return camObj.UpdateCameraEntry(sqlds.DBConn)
 }
 
 func (sqlds *SqliteDataStore)GetCamera(cameraName string) (*dataSet.Camera,
@@ -93,8 +84,8 @@ func (sqlds *SqliteDataStore)GetCamera(cameraName string) (*dataSet.Camera,
     var camObj sqlCamera
     camObj.Camera = new(dataSet.Camera)
     camObj.Camera.Name = cameraName
-    camObj.GetCameraEntry(sqlds.DBConn)
-    return camObj.Camera, nil
+    row, err := camObj.GetCameraEntry(sqlds.DBConn)
+    return row, err
 }
 
 func(sqlds *SqliteDataStore)GetAllCameras()([]dataSet.Camera, error) {

@@ -24,6 +24,7 @@ const (
 type CameraStatus uint64
 
 //Structure to hold all the information for the camera.
+//Must update JsonCamera when updating this structure.
 type Camera struct {
     Name   string        `json:"Name"`
     Ipaddr string        `json:"Ipaddr"`

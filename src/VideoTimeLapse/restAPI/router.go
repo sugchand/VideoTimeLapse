@@ -18,7 +18,6 @@ import (
     "net/http"
     "github.com/gorilla/mux"
     "VideoTimeLapse/logging"
-    "VideoTimeLapse/dataSet/dataSetImpl"
 )
 
 // Route defines a route
@@ -100,6 +99,5 @@ func (routeObj *Routes)NewRouter() *mux.Router {
         log.Trace("Created route for %s", route.Name)
     }
     routeObj.controller = new(controller)
-    routeObj.controller.dataObj = dataSetImpl.GetDataSetObj()
     return router
 }
