@@ -24,6 +24,7 @@ import (
     "VideoTimeLapse/logging"
     "VideoTimeLapse/restAPI"
     "VideoTimeLapse/dataSet/dataSetImpl"
+    "VideoTimeLapse/CameraTimeLapse/CameraThreadImpl"
 )
 
 func startLoggerService(configObj *config.AppConfig) {
@@ -53,6 +54,13 @@ func setupRESTService(configObj *config.AppConfig) error {
     return nil
 }
 
+func setupCameraTimeLapseService(configObj *config.AppConfig) error {
+    camThreadRunner := CameraThreadImpl.GetCameraThreadRunner()
+    camThreadRunner.CamThreadRunnerMain(configObj)
+    err := camThreadRunner.CameraThreadRunnerStartup(configObj)
+    return err
+}
+
 func main() {
     var err error
     configObj := new(config.AppConfig)
@@ -67,6 +75,12 @@ func main() {
     if err != nil {
         log.Error("Failed to start the DB service, err: %s", err)
         panic("DB init error")
+    }
+
+    err = setupCameraTimeLapseService(configObj)
+    if err != nil {
+        log.Error("Failed to start cameraThreadRunner module")
+        panic("Cannot start CameraThreadRunner.")
     }
     err = setupRESTService(configObj)
     if err != nil {
