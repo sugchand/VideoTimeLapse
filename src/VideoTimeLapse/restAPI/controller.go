@@ -22,6 +22,7 @@ import (
     "github.com/gorilla/mux"
     "VideoTimeLapse/dataSet"
     "VideoTimeLapse/dataSet/dataSetImpl"
+    "VideoTimeLapse/CameraTimeLapse/CameraThreadImpl"
     "VideoTimeLapse/logging"
     "VideoTimeLapse/appErrors"
 )
@@ -50,6 +51,20 @@ func (ctrl *controller) getAllCameras(w http.ResponseWriter, r *http.Request) {
     w.Write(data)
 }
 
+func(ctrl *controller)signalCameraThreadRunner(camera *dataSet.Camera) error {
+    var err error
+    if err == nil {
+        //Successfully added a camera to the system.
+        // Must signal the camerathread runner about the new camera.
+        camRunner := CameraThreadImpl.GetCameraThreadRunner()
+        //It is very unlikely the signal on a channel can cause
+        // the thread to block, as the camerathreadrunner can hold
+        //up the messages and let the thread continue.
+        camRunner.SignalCameraThreadOp(camera)
+    }
+    return err
+}
+
 func (ctrl *controller) createCamera(w http.ResponseWriter, r *http.Request) {
     log := logging.GetLoggerInstance()
     body, err := ioutil.ReadAll(io.LimitReader(r.Body, 1048576))
@@ -61,7 +76,7 @@ func (ctrl *controller) createCamera(w http.ResponseWriter, r *http.Request) {
     if err := r.Body.Close(); err != nil {
         log.Error("Failed to close the request.")
     }
-    jsonCamObj := new(JsonCamera)
+    jsonCamObj := new(JsonCameraInput)
     jsonCamObj.AllocateFields()
     if err := json.Unmarshal(body, &jsonCamObj); err != nil {
         w.WriteHeader(422)
@@ -79,7 +94,7 @@ func (ctrl *controller) createCamera(w http.ResponseWriter, r *http.Request) {
     err = dataObj.AddNewCamera(&camObj)
     if err != nil {
         log.Error("Failed to create camera entry in table err :%s", err)
-        if err == appErrors.DB_ROW_PRESENT_IN_SYSTEM {
+        if err == appErrors.DATA_PRESENT_IN_SYSTEM {
             w.WriteHeader(400) //Bad Request.
             return
         }
@@ -88,6 +103,18 @@ func (ctrl *controller) createCamera(w http.ResponseWriter, r *http.Request) {
     }
     w.Header().Set("Content-Type", "application/json; charset=UTF-8")
     w.WriteHeader(http.StatusCreated)
+
+    //Update the camerathreadRunner with new camera created
+    //The request may have partial information on the camera Obj.
+    //So update the camerathread runner using the entry stored in the system.
+    var camInSys *dataSet.Camera
+    camInSys, err = dataObj.GetCamera(camObj.Name)
+    if err != nil || camInSys == nil {
+        log.Error(`camerathreadrunner update failed as newely created camera
+                   entry %s not found in system`, camObj.Name)
+        return
+    }
+    ctrl.signalCameraThreadRunner(camInSys)
 }
 
 func (ctrl *controller) getCamera(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +130,7 @@ func (ctrl *controller) getCamera(w http.ResponseWriter, r *http.Request) {
     camObj, err := dataObj.GetCamera(cameraId)
     if err != nil {
         log.Error("Failed to get Camera from the server err:%s", err)
-        if err == appErrors.DB_ROW_NOT_FOUND {
+        if err == appErrors.DATA_NOT_FOUND {
             w.WriteHeader(http.StatusNotFound)
             return
         }
@@ -128,6 +155,14 @@ func (ctrl *controller) deleteCamera(w http.ResponseWriter, r *http.Request) {
         w.WriteHeader(http.StatusBadRequest)
         return
     }
+    var camObj *dataSet.Camera
+    camObj,err = dataObj.GetCamera(cameraId)
+    if err != nil || camObj == nil {
+        log.Error(`Failed to retrieive the camera object, cannot delete %s
+                    err : %s`, cameraId, err)
+        w.WriteHeader(http.StatusBadRequest)
+        return
+    }
     err = dataObj.DeleteCamera(cameraId)
     if err != nil {
         log.Error("Failed to delete the camera err : %s", err)
@@ -135,6 +170,9 @@ func (ctrl *controller) deleteCamera(w http.ResponseWriter, r *http.Request) {
         return
     }
     w.WriteHeader(http.StatusOK)
+    //Destroy the camera thread as its deleted.
+    camObj.Status = dataSet.CAMERA_DELETED
+    ctrl.signalCameraThreadRunner(camObj)
 }
 
 func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
@@ -158,14 +196,14 @@ func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
         log.Error("Failed to close the request.")
     }
 
-    jsonCamObj := new(JsonCamera)
+    jsonCamObj := new(JsonCameraInput)
     jsonCamObj.AllocateFields()
     if err := json.Unmarshal(body, &jsonCamObj); err != nil {
         w.WriteHeader(422)
         log.Error("Failed to Unmarshal the camera input err:%s", err)
         if err := json.NewEncoder(w).Encode(err); err != nil {
             log.Error("Failed to encode marshaling err : %s", err)
-            w.WriteHeader(http.StatusInternalServerError)
+            w.WriteHeader(http.StatusBadRequest)
             return
         }
     }
@@ -185,14 +223,14 @@ func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
     if err != nil {
         log.Error("Failed to get the record, Cannot update the camera %s, err:%s",
                     *jsonCamObj.Name, err)
-        w.WriteHeader(http.StatusInternalServerError)
+        w.WriteHeader(http.StatusBadRequest)
         return
     }
     jsonCamObj.ReadJsonData(camObj)
     err = dataObj.UpdateCamera(camObj)
     if err != nil {
         log.Error("Failed to update the camera %s", err)
-        if err == appErrors.DB_ROW_NOT_FOUND {
+        if err == appErrors.DATA_NOT_FOUND {
             w.WriteHeader(http.StatusBadRequest)
             return
         }
