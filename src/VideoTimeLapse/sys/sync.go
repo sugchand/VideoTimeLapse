@@ -20,6 +20,7 @@ import (
 
 type Sync struct {
     restExitFlag chan bool
+    camThreadRunnerExitFlag chan bool
     // WaitGroup to keep track of threads that are currently running.
     appWaitGroups sync.WaitGroup
 }
@@ -30,7 +31,21 @@ var once sync.Once
 func(syncObj *Sync)InitSyncParams() {
     once.Do(func() {
         syncObj.restExitFlag = make(chan bool)
+        syncObj.camThreadRunnerExitFlag = make(chan bool)
     })
+}
+
+func(syncObj *Sync)ExitCameraThreadRunnerService() {
+    syncObj.camThreadRunnerExitFlag <- true
+}
+
+func(syncObj *Sync)IsCameraThreadRunnerExited() bool{
+    select {
+        case <-syncObj.camThreadRunnerExitFlag:
+            return true
+        default:
+            return false
+    }
 }
 
 func(syncObj *Sync)ExitRestService() {
@@ -65,6 +80,7 @@ func (syncObj *Sync)JoinAllRoutines() {
 
 func(syncObj *Sync)DestoryAllRoutines() {
     syncObj.ExitRestService()
+    syncObj.ExitCameraThreadRunnerService()
 }
 
 //Function to get the application level syncObj.
