@@ -3,6 +3,8 @@ package config
 import (
     "fmt"
     "flag"
+    "os"
+    "path/filepath"
     "VideoTimeLapse/logging"
 )
 
@@ -12,12 +14,14 @@ type AppConfig struct {
     Logfile string
     Loglevel int64
     Dbpath string
+    VideoPath string
 }
 
 const (
     DEFAULT_LISTEN_PORT = "9000"
     DEFAULT_LOG_LEVEL = logging.Trace
-    DEFAULT_DB_NAME = "/tmp/timelapse.db"
+    DEFAULT_PATH = "/tmp/"
+    DEFAULT_DB_NAME = "timelapse.db"
 )
 
 func (config *AppConfig)printHelp() {
@@ -29,7 +33,7 @@ func (config *AppConfig)printHelp() {
         "\n\t      -a <ipAddr> / -ipaddr <ipAddr>      :- Ip address to listen on(Default : localhost)" +
         "\n\t      -p <port> / -port <port>            :- Port to listen on(Default : 9000)" +
         "\n\t      -f <file> / -logfile <file>         :- Optional logfile" +
-        "\n\t      -d <db> / -db <db>                  : Backend DB(default : /tmp/timelapse.db)" +
+        "\n\t      -D <path> / -dir <path>             :- Directory for Backend DB & videos(default : /tmp)" +
         "\n\t      -A <db ip> / -dbIp <db ip>          :- Ip address to reach DB server" +
         "\n\t      -P <db port> / -dbPort <dbport>     :- Port to reach DB server" +
         "\n\t      -l <loglevel>/ -loglevel <loglevel> :- loglevel for the application(Default :2)" +
@@ -43,6 +47,7 @@ func (config *AppConfig)printHelp() {
 
 //Read the config from the commandline to the config structure
 func (config *AppConfig)InitConfig() {
+    var err error
     flag.Usage = config.printHelp
     ipaddrShort := flag.String("a", "127.0.0.1", "Ip address to listen on")
     ipaddrLong := flag.String("ipaddr", "127.0.0.1", "Ip address to listen on")
@@ -52,8 +57,8 @@ func (config *AppConfig)InitConfig() {
     logFileLong := flag.String("logfile", "", "Optional logfile")
     loglevelShort := flag.Int64("l", DEFAULT_LOG_LEVEL, "loglevel for the application")
     loglevellong := flag.Int64("loglevel", DEFAULT_LOG_LEVEL, "loglevel for the application")
-    dbPathShort := flag.String("d",DEFAULT_DB_NAME, "Backend DB")
-    dbPathLong := flag.String("db", DEFAULT_DB_NAME, "Backend DB")
+    pathShort := flag.String("D",DEFAULT_PATH, "Backend DB")
+    pathLong := flag.String("dir", DEFAULT_PATH, "Backend DB")
     flag.Parse()
 
     config.Ip = *ipaddrShort
@@ -72,11 +77,21 @@ func (config *AppConfig)InitConfig() {
     if config.Loglevel == DEFAULT_LOG_LEVEL {
         config.Loglevel = *loglevellong
     }
-    config.Dbpath = *dbPathShort
-    if *dbPathShort == DEFAULT_DB_NAME {
-        config.Dbpath = *dbPathLong
+    path := *pathShort
+    if *pathShort == DEFAULT_PATH {
+        path = *pathLong
     }
+    path, err = filepath.Abs(path)
+    if err != nil {
+        //Failed to get the absoluate path of directory
+         path = DEFAULT_PATH
 
+    } else if _, err = os.Stat(path); err != nil {
+        //Directory not present in system.
+        path = DEFAULT_PATH
+    }
+    config.Dbpath = path + "/" + DEFAULT_DB_NAME
+    config.VideoPath = path
     //TODO :: Need to populate DB server IP and port when needed.
     // For now there is only one db backend is implemented, i.e sqlite.
     // it doesnt need any server ip or port.
