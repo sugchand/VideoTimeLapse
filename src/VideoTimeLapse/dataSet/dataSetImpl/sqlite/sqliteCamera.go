@@ -9,6 +9,12 @@ import (
     "VideoTimeLapse/appErrors"
 )
 
+//Some of field names are not same as struct Camera.
+// sqlx doesnt like camel-case/snake type parameter names.
+//Using those naming convention need tagging at the struct, something like,
+//       Name string `db: "Name"`
+// To avoid redefining the standard camera struct to sql format, we use
+// standard naming approach like below.
 const (
     CAMERA_TABLE = "camera"
     CAMERA_FIELD_NAME = "name"
@@ -16,8 +22,10 @@ const (
     CAMERA_FIELD_PORT = "port"
     CAMERA_FIELD_DESC = "desc"
     CAMERA_FIELD_STATUS = "status"
+    CAMERA_FIELD_TYPE = "type"
     CAMERA_FIELD_USERID = "userid"
     CAMERA_FIELD_PWD = "pwd"
+    CAMERA_FIELD_VIDEOLEN = "videolensec"
 )
 
 var (
@@ -27,20 +35,24 @@ var (
                  %s TEXT NOT NULL,
                  %s TEXT,
                  %s INTEGER,
+                 %s INTEGER DEFAULT %d,
                  %s TEXT,
-                 %s TEXT)`,
+                 %s TEXT,
+                 %s INTEGER DEFAULT %d)`,
                  CAMERA_TABLE,
                  CAMERA_FIELD_NAME,
                  CAMERA_FIELD_IPADDR,
                  CAMERA_FIELD_PORT,
                  CAMERA_FIELD_DESC,
                  CAMERA_FIELD_STATUS,
+                 CAMERA_FIELD_TYPE, dataSet.CAMERA_TYPE_RTSP,
                  CAMERA_FIELD_USERID,
-                 CAMERA_FIELD_PWD)
+                 CAMERA_FIELD_PWD,
+                 CAMERA_FIELD_VIDEOLEN, dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC)
     //Create a role entry in table roles
     cameraCreate = fmt.Sprintf(`INSERT INTO %s
-                                (%s, %s, %s, %s, %s, %s, %s)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                                (%s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                                 CAMERA_TABLE,
                                 CAMERA_FIELD_NAME,
                                 CAMERA_FIELD_IPADDR,
@@ -48,7 +60,8 @@ var (
                                 CAMERA_FIELD_DESC,
                                 CAMERA_FIELD_STATUS,
                                 CAMERA_FIELD_USERID,
-                                CAMERA_FIELD_PWD)
+                                CAMERA_FIELD_PWD,
+                                CAMERA_FIELD_VIDEOLEN)
 
     cameraGet = fmt.Sprintf("SELECT * FROM %s WHERE %s=(?)",
                             CAMERA_TABLE,
@@ -60,7 +73,7 @@ var (
                                     CAMERA_FIELD_PORT)
     cameraGetAll = fmt.Sprintf("SELECT * FROM %s", CAMERA_TABLE)
     cameraUpdate = fmt.Sprintf(`UPDATE %s SET %s=(?),%s=(?),%s=(?),
-                                              %s=(?),%s=(?),%s=(?)
+                                              %s=(?),%s=(?),%s=(?),%s=(?)
                                               WHERE %s=(?)`,
                                               CAMERA_TABLE,
                                               CAMERA_FIELD_IPADDR,
@@ -69,12 +82,19 @@ var (
                                               CAMERA_FIELD_STATUS,
                                               CAMERA_FIELD_USERID,
                                               CAMERA_FIELD_PWD,
+                                              CAMERA_FIELD_VIDEOLEN,
                                               CAMERA_FIELD_NAME)
     cameraDelete = fmt.Sprintf("DELETE FROM %s WHERE %s=(?)",
                                 CAMERA_TABLE, CAMERA_FIELD_NAME)
 
 )
 
+// Anonymous pointer to camera struct. It is decided to use pointer instead of
+// Camera value as is due to reduce the overhead of copying in later stages.
+// Creation of sqlCamera must need to allocate Camera as well to avoid runtime
+// panic. However end to end sqlCamera can keep the same Camera entry struct
+// for whole operations without copying the values each time.
+// It is assumed copying pointer faster than copying the entire structure.
 type sqlCamera struct {
     *dataSet.Camera
 }
@@ -87,6 +107,7 @@ func(camObj *sqlCamera)CreateCameraTable(conn *sqlx.DB) error {
         log.Error("Failed to create Camera table %s", err)
         return err
     }
+    log.Trace("Table %s created successfully", CAMERA_TABLE)
     return nil
 }
 
@@ -96,7 +117,7 @@ func (camObj *sqlCamera)GetAllCameraEntries(conn *sqlx.DB) ([]dataSet.Camera, er
     rows := []dataSet.Camera{}
     err = conn.Select(&rows, cameraGetAll)
     if err != nil {
-        log.Error("Failed to gt the rows from camera table")
+        log.Error("Failed to get the rows from camera table")
     }
     return rows, err
 }
@@ -146,10 +167,10 @@ func(camObj *sqlCamera)GetCameraEntry(conn *sqlx.DB) (*dataSet.Camera, error) {
         return nil, err
     }
     if len(rows) > 1 {
-        return &rows[0], appErrors.DB_ROW_UNIQUE_ERROR
+        return &rows[0], appErrors.DATA_NOT_UNIQUE_ERROR
     }
     if len(rows) == 0 {
-        return nil, appErrors.DB_ROW_NOT_FOUND
+        return nil, appErrors.DATA_NOT_FOUND
     }
     return &rows[0], nil
 }
@@ -166,7 +187,7 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
     }
     var row *dataSet.Camera
     row, err = camObj.GetCameraEntry(conn)
-    if  err != nil  && err != appErrors.DB_ROW_NOT_FOUND {
+    if  err != nil  && err != appErrors.DATA_NOT_FOUND {
         log.Error("Failed to get the camera record for %s", camObj.Name)
         return err
     }
@@ -174,7 +195,7 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
         //We found an row with same name,
         log.Error("Cannot insert DB row %s, as its present in system",
                         camObj.Name)
-        return appErrors.DB_ROW_PRESENT_IN_SYSTEM
+        return appErrors.DATA_PRESENT_IN_SYSTEM
     }
     rows := []dataSet.Camera{}
     rows, err = camObj.GetCameraEntryonIpPort(conn)
@@ -184,10 +205,14 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
     }
     if len(rows) != 0 {
         log.Error("Camera entry already present with same IP and port")
-        return appErrors.DB_ROW_PRESENT_IN_SYSTEM
+        return appErrors.DATA_PRESENT_IN_SYSTEM
+    }
+    if camObj.VideoLenSec == 0 {
+        camObj.VideoLenSec = dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC
     }
     _, err = conn.Exec(cameraCreate, camObj.Name, camObj.Ipaddr, camObj.Port,
-                        camObj.Desc, camObj.Status, camObj.UserId, camObj.Pwd)
+                        camObj.Desc, camObj.Status, camObj.UserId, camObj.Pwd,
+                        camObj.VideoLenSec)
     if err != nil {
         log.Error("Failed to create the camera record %s, err :%s",
                             camObj.Name, err)
@@ -201,9 +226,13 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
 func(camObj *sqlCamera)UpdateCameraEntry(conn *sqlx.DB) error {
     var err error
     log := logging.GetLoggerInstance()
+    if camObj.VideoLenSec == 0 {
+        camObj.VideoLenSec = dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC
+    }
     _, err = conn.Exec(cameraUpdate, camObj.Camera.Ipaddr, camObj.Camera.Port,
                         camObj.Camera.Desc, camObj.Camera.Status,
                         camObj.Camera.UserId, camObj.Camera.Pwd,
+                        camObj.Camera.VideoLenSec,
                         camObj.Name)
     if err != nil {
         log.Error("Failed to update the camera record err :%s", err)
