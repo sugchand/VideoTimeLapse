@@ -26,7 +26,8 @@ build:
 ifndef DEP
 $(error "dep is not available please install go dep package manager")
 endif
-	-@(cd $(GOSRCPATH);$(DEP) status 2> /dev/null)
+	#Make sure the 'dep status' shows right data
+	#-@(cd $(GOSRCPATH);$(DEP) status 2> /dev/null)
 	@echo -e "\n\tSet 'GOPATH' to '$(GOPATH)'"
 	@echo -e "\tRun 'dep ensure' in $(GOSRCPATH) to install missing third party packages\n"
 	$(GO) build $(GCFLAGS) -o $(GOOUTPUTBIN) $(GOSRCPATH)
