@@ -32,7 +32,6 @@ type RestAPI struct {
 //Must be called as a go-routine.
 func (handler *RestAPI)RestHandlerThread(addr string,
                  handlerFn http.Handler) {
-    var err error
     log := logging.GetLoggerInstance()
     syncObj := sys.GetAppSyncObj()
     //Go routine to start server listen thread.
@@ -41,15 +40,13 @@ func (handler *RestAPI)RestHandlerThread(addr string,
     httpObj :=
             &http.Server { Addr: addr,
                 Handler: handlerFn}
+    log.Trace("Starting REST service at %s:%s", handler.listenIp,
+                handler.listenPort)
     go func() {
         fmt.Printf("\n\nApplication starting REST service at %s\n\n",
             handler.listenIp + ":" + handler.listenPort)
-        err = httpObj.ListenAndServe()
-        if err != nil {
-            log.Error("Failed to start the http server, %s", err)
-            panic("REST API failed to start")
-            return
-        }
+        httpObj.ListenAndServe()
+        log.Trace("Exiting the REST service.")
     }()
     //Wait for the exit signal.
     syncObj.ReadRestServiceExitSignal()
