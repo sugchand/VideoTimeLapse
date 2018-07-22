@@ -5,7 +5,9 @@ import (
     "os"
     "time"
     "sync"
+    "sort"
     "unsafe"
+    "io/ioutil"
     "VideoTimeLapse/dataSet"
     "VideoTimeLapse/config"
     "VideoTimeLapse/logging"
@@ -90,20 +92,17 @@ func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
     return err
 }
 
-func (camThread *RTSPCameraThread)destroyInput() {
-    if camThread.inputHandler == nil || camThread.inputHandler.vsInput == nil{
+func (camThread *RTSPCameraThread)destroyInput(input *Input) {
+    if input == nil || input.vsInput == nil{
         return
     }
-    camThread.threadLock.Lock()
-    camThread.inputHandler.mutex.Lock()
-    defer camThread.inputHandler.mutex.Unlock()
+    input.mutex.Lock()
+    defer input.mutex.Unlock()
 
-    if camThread.inputHandler.vsInput != nil {
-        C.vs_destroy_input(camThread.inputHandler.vsInput)
-        camThread.inputHandler.vsInput = nil
+    if input.vsInput != nil {
+        C.vs_destroy_input(input.vsInput)
+        input.vsInput = nil
     }
-    camThread.inputHandler = nil
-    camThread.threadLock.Unlock()
 }
 
 func (camThread *RTSPCameraThread)destroyOutput(output *Output,
@@ -194,7 +193,6 @@ func (camThread *RTSPCameraThread)writePacket(input *Input,
         return
     }
     C.av_packet_free(&pkt)
-    return
 }
 
 //Create a videosnapshot with specific name.
@@ -242,7 +240,7 @@ func (camThread *RTSPCameraThread)createVideoSnapshot(fileName string) error {
         err = os.MkdirAll(videoPath, 0744)
         if err != nil {
             log.Error("Failed to create directory %s", videoPath)
-            camThread.destroyInput()
+            camThread.destroyInput(camThread.inputHandler)
             return err
         }
     }
@@ -265,7 +263,6 @@ func (camThread *RTSPCameraThread)createVideoSnapshot(fileName string) error {
         if readRes == 0 {
             continue
         }
-
         go camThread.writePacket(input, output, &pkt, &waitWrite)
         numFrames++
     }
@@ -283,6 +280,112 @@ func (camThread *RTSPCameraThread)isExitFired() bool {
         default:
             return false
     }
+}
+
+//Function to clean up all the snapshot files after the timelapse creation.
+func (camThread *RTSPCameraThread)deleteInputSnapshots(dir string,
+                                                    files []os.FileInfo) {
+    var err error
+    var filepath string
+    log := logging.GetLoggerInstance()
+    for _, file := range files {
+        filepath = dir + "/" + file.Name()
+        err = os.Remove(filepath)
+        if err != nil {
+            log.Error("Failed to delete snapshot file %s", filepath)
+        }
+    }
+}
+
+// Function to create timelapse video from snapshots.
+// This function go through every snapshot files and stitch together
+// to generate final snapshot video
+func (camThread *RTSPCameraThread)createTimelapseWithSnapshots(
+                                videoPath string) {
+    log := logging.GetLoggerInstance()
+    files, err := ioutil.ReadDir(videoPath)
+    if err != nil {
+        log.Error("Failed to read directory, cannot create timelapse, err:%s",
+                    err)
+        return
+    }
+    if len(files) == 0 {
+        log.Info("Cannot create timelapse video from empty snapshots")
+        return
+    }
+    //Sort files based on its creation time.
+    sort.Slice(files, func(i,j int) bool{
+    return files[i].ModTime().Before(files[j].ModTime())
+    })
+    timeLapsePath := videoPath + "/timeLapse"
+    if _, err = os.Stat(timeLapsePath); os.IsNotExist(err) {
+        err = os.MkdirAll(timeLapsePath, 0744)
+        if err != nil {
+            log.Error("Failed to create timelapse directory %s",
+                        timeLapsePath)
+            return
+        }
+    }
+    var outputOnce sync.Once
+    var outputHandler *Output
+    for _, file := range files {
+        log.Trace("Now processing file %s", file.Name())
+        inputHandler := camThread.openInput("mp4",
+                            videoPath + "/" + file.Name())
+        if inputHandler == nil || inputHandler.vsInput == nil {
+            log.Trace("Failed to create input handler for %s", file)
+            continue
+        }
+        outputOnce.Do(func() {
+            log.Trace("Creating new output Handler")
+            outputHandler = camThread.openMP4Output(timeLapsePath +
+                                       "/timeLapse.mp4",
+                                        inputHandler)
+        })
+        if outputHandler == nil || outputHandler.vsOutput == nil {
+            log.Trace("Failed to create output handler")
+            camThread.destroyInput(inputHandler)
+            continue
+        }
+        for {
+            //Copy packets from input to output.
+            var pkt C.AVPacket
+            readRes := C.int(0)
+            if inputHandler == nil || inputHandler.vsInput == nil {
+                //Cannot read from a null input. return now.
+                break
+            }
+            inputHandler.mutex.RLock()
+            readRes = C.vs_read_packet(inputHandler.vsInput, &pkt,
+                                       C.bool(false))
+            inputHandler.mutex.RUnlock()
+            if readRes == -1  {
+                break
+            }
+            if readRes == 0 {
+                continue
+            }
+            pktOut := C.av_packet_clone(&pkt)
+            outputHandler.mutex.Lock()
+            writeRes := C.vs_write_packet(inputHandler.vsInput,
+                                     outputHandler.vsOutput, pktOut,
+                                  C.bool(false))
+            outputHandler.mutex.Unlock()
+            if writeRes == -1 {
+                log.Error("Failed to write the packet to timeLapse.")
+            }
+            C.av_packet_free(&pktOut)
+
+        }
+        camThread.destroyInput(inputHandler)
+    }
+    if outputHandler == nil || outputHandler.vsOutput == nil {
+        return
+    }
+    outputHandler.mutex.Lock()
+    C.vs_destroy_output(outputHandler.vsOutput)
+    outputHandler.mutex.Unlock()
+    camThread.deleteInputSnapshots(videoPath, files)
 }
 
 // Goroutine to execute the camera thread function.
@@ -318,13 +421,17 @@ func (camThread *RTSPCameraThread)executeCameraThreadRoutine() error {
         if camThread.isExitFired() {
             //Exit the loop, as user wanted to kill the thread.
             //create the timelapse video for whatever is present.
-            camThread.destroyInput()
+            camThread.destroyInput(camThread.inputHandler)
             break
         }
         if numFramesCopied >= totOutFrame {
             //Create the timelapse video from the video snapshots now.
             //Reset the time to start over the timelapse video.
-            log.Trace("Completed the snapshot generation, create timelapse now")
+            log.Trace(`Completed the snapshot generation as %d frames are
+                       created, Creating timelapse video`, numFramesCopied)
+            go camThread.createTimelapseWithSnapshots(
+                                   camThread.videoPath + "/" +
+                                   camThread.startTime.Format(TIME_DIR_FORMAT))
             numFramesCopied = 0
             camThread.threadLock.Lock()
             camThread.startTime = time.Now()
@@ -342,6 +449,8 @@ func (camThread *RTSPCameraThread)executeCameraThreadRoutine() error {
                            camThread.name, err)
             }
             elapsedTime = 0
+            //Update the number of frames created so far
+            numFramesCopied = numFramesCopied + DEFAULT_SNAPSHOT_LEN
         }
         time.Sleep(time.Duration(defaultSleep))
         elapsedTime = elapsedTime + uint64(time.Now().Sub(startTime).Seconds())
