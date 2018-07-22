@@ -185,6 +185,10 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
                     camObj.Name, camObj.Status)
         return appErrors.INVALID_INPUT
     }
+    if len(camObj.Pwd) != 0 && len(camObj.UserId) == 0 {
+        log.Error("Invalid username/pwd, cannot update %s", camObj.Name)
+        return appErrors.INVALID_INPUT
+    }
     var row *dataSet.Camera
     row, err = camObj.GetCameraEntry(conn)
     if  err != nil  && err != appErrors.DATA_NOT_FOUND {
@@ -228,6 +232,15 @@ func(camObj *sqlCamera)UpdateCameraEntry(conn *sqlx.DB) error {
     log := logging.GetLoggerInstance()
     if camObj.VideoLenSec == 0 {
         camObj.VideoLenSec = dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC
+    }
+    if res, _ := camObj.IsCameraStatusValid(); res {
+        log.Error("Failed to update the camera entry %s, invalid status",
+                    camObj.Name)
+        return appErrors.INVALID_INPUT
+    }
+    if len(camObj.Pwd) != 0 && len(camObj.UserId) == 0 {
+        log.Error("Invalid username/pwd, cannot update %s", camObj.Name)
+        return appErrors.INVALID_INPUT
     }
     _, err = conn.Exec(cameraUpdate, camObj.Camera.Ipaddr, camObj.Camera.Port,
                         camObj.Camera.Desc, camObj.Camera.Status,
