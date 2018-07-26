@@ -49,11 +49,10 @@ type RTSPCameraThread struct {
     totOutFrames uint64 //Total number of frames in final timelapse video
     startTime time.Time
     threadLock sync.RWMutex
-    inputHandler *Input
 }
 
 const (
-    TIME_DIR_FORMAT = "2006-01-02T15-04-05Z07-00"
+    TIME_DIR_FORMAT = "20060102150405"
     DEFAULT_SNAPSHOT_LEN = 48
 )
 
@@ -77,13 +76,12 @@ func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
     camThread.videoPath = conf.VideoPath
     camThread.videoLen = cam.VideoLenSec
     //Create directory for camera streams.
-    camThread.videoPath = camThread.videoPath + "/" + camThread.name +
-                          camThread.ip
+    camThread.videoPath = camThread.videoPath + "/" + camThread.name
     if _, err = os.Stat(camThread.videoPath); os.IsNotExist(err) {
         err = os.MkdirAll(camThread.videoPath, 0744)
     }
     //TODO :: read it from DB.
-    camThread.videoInterval = 60
+    camThread.videoInterval = 1
     if camThread.videoInterval > camThread.videoLen {
         //Interval cannot be more than the total recording duratation.
         camThread.videoInterval = camThread.videoLen
@@ -129,7 +127,7 @@ func (camThread *RTSPCameraThread)openInput(inputFormat string,
 
     input := C.vs_open_input(inputFormatC, inputURLC, C.bool(false))
     if input == nil {
-        log.Error("Failed to open RTSP input %s", inputURL)
+        log.Error("Failed to open input %s", inputURL)
         C.free(unsafe.Pointer(inputFormatC))
         C.free(unsafe.Pointer(inputURLC))
         return nil
@@ -204,33 +202,25 @@ func (camThread *RTSPCameraThread)createVideoSnapshot(fileName string) error {
     camThread.threadLock.RLock()
     videoPath := camThread.videoPath + "/" +
                 camThread.startTime.Format(TIME_DIR_FORMAT)
-    input = camThread.inputHandler
-    if input == nil {
-        var url string
-        url = "rtsp://" + camThread.ip + ":" + camThread.port + "/"
-        if len(camThread.uname) != 0 {
-            url = "rtsp://" + camThread.uname + "@" +
+    var url string
+    url = "rtsp://" + camThread.ip + ":" + camThread.port + "/"
+    if len(camThread.uname) != 0 {
+        url = "rtsp://" + camThread.uname + "@" +
                        camThread.ip + ":" + camThread.port + "/"
-        }
-        if len(camThread.pwd) != 0 {
-            //if password is present, the username must be present.
-            url = "rtsp://" + camThread.uname + ":" + camThread.pwd + "@" +
+    }
+    if len(camThread.pwd) != 0 {
+        //if password is present, the username must be present.
+        url = "rtsp://" + camThread.uname + ":" + camThread.pwd + "@" +
                    camThread.ip + ":" + camThread.port + "/"
-        }
-        input = camThread.openInput("rtsp", url)
-        if input == nil || input.vsInput == nil {
-            log.Error("Failed to create Input handler %s", camThread.name)
-            camThread.threadLock.RUnlock()
-            return nil
-        }
     }
+    input = camThread.openInput("rtsp", url)
+    if input == nil || input.vsInput == nil {
+        log.Error("Failed to create Input handler %s", camThread.name)
+        camThread.threadLock.RUnlock()
+        return nil
+    }
+
     camThread.threadLock.RUnlock()
-    //Store the input handler in the camera thread Obj
-    if input != camThread.inputHandler {
-        camThread.threadLock.Lock()
-        camThread.inputHandler = input
-        camThread.threadLock.Unlock()
-    }
 
     //Create the output directory if not exists.
     //There is overhead of checking if a directory exists in
@@ -240,12 +230,16 @@ func (camThread *RTSPCameraThread)createVideoSnapshot(fileName string) error {
         err = os.MkdirAll(videoPath, 0744)
         if err != nil {
             log.Error("Failed to create directory %s", videoPath)
-            camThread.destroyInput(camThread.inputHandler)
+            camThread.destroyInput(input)
             return err
         }
     }
     videoPath = videoPath + "/" + fileName
     output := camThread.openMP4Output(videoPath, input)
+    if output == nil || output.vsOutput == nil {
+        log.Trace("Empty Output for %s", videoPath)
+        return nil
+    }
     //waitgroup for confirm all write complete before destroying the output.
     var waitWrite sync.WaitGroup
     //Read the frames in the loop.
@@ -269,6 +263,7 @@ func (camThread *RTSPCameraThread)createVideoSnapshot(fileName string) error {
     // We dont wanted to block the orignal thread until the destroy finished.
     // destroy will happen only when all the output write completes.
     go camThread.destroyOutput(output, &waitWrite)
+    camThread.destroyInput(input)
     log.Trace("Created camera thread snapshot %s", videoPath)
     return nil
 }
@@ -326,65 +321,67 @@ func (camThread *RTSPCameraThread)createTimelapseWithSnapshots(
             return
         }
     }
-    var outputOnce sync.Once
-    var outputHandler *Output
-    for _, file := range files {
-        log.Trace("Now processing file %s", file.Name())
-        inputHandler := camThread.openInput("mp4",
-                            videoPath + "/" + file.Name())
-        if inputHandler == nil || inputHandler.vsInput == nil {
-            log.Trace("Failed to create input handler for %s", file)
-            continue
-        }
-        outputOnce.Do(func() {
-            log.Trace("Creating new output Handler")
-            outputHandler = camThread.openMP4Output(timeLapsePath +
-                                       "/timeLapse.mp4",
-                                        inputHandler)
-        })
-        if outputHandler == nil || outputHandler.vsOutput == nil {
-            log.Trace("Failed to create output handler")
-            camThread.destroyInput(inputHandler)
-            continue
-        }
-        for {
-            //Copy packets from input to output.
-            var pkt C.AVPacket
-            readRes := C.int(0)
-            if inputHandler == nil || inputHandler.vsInput == nil {
-                //Cannot read from a null input. return now.
-                break
-            }
-            inputHandler.mutex.RLock()
-            readRes = C.vs_read_packet(inputHandler.vsInput, &pkt,
-                                       C.bool(false))
-            inputHandler.mutex.RUnlock()
-            if readRes == -1  {
-                break
-            }
-            if readRes == 0 {
-                continue
-            }
-            pktOut := C.av_packet_clone(&pkt)
-            outputHandler.mutex.Lock()
-            writeRes := C.vs_write_packet(inputHandler.vsInput,
-                                     outputHandler.vsOutput, pktOut,
-                                  C.bool(false))
-            outputHandler.mutex.Unlock()
-            if writeRes == -1 {
-                log.Error("Failed to write the packet to timeLapse.")
-            }
-            C.av_packet_free(&pktOut)
 
-        }
-        camThread.destroyInput(inputHandler)
-    }
-    if outputHandler == nil || outputHandler.vsOutput == nil {
+    //Create a list files with all the snapshots.
+    var listFile *os.File
+    timeLapseList := videoPath + "/timelapseList.txt"
+    listFile, err = os.Create(timeLapseList)
+    if err != nil {
+        log.Error("Failed to create the snapshot list file %s, err :%s",
+                    timeLapseList, err)
         return
     }
-    outputHandler.mutex.Lock()
-    C.vs_destroy_output(outputHandler.vsOutput)
-    outputHandler.mutex.Unlock()
+    for _, snapshot := range files {
+       //Create a list file with all the snapshot file names.
+       fmt.Fprintf(listFile, "file '%s'\n", snapshot.Name())
+    }
+    listFile.Close()
+    concatInput := camThread.openInput("concat", timeLapseList)
+    if concatInput == nil || concatInput.vsInput == nil {
+        log.Error("Failed to open concat file %s", timeLapseList)
+        return
+    }
+    timeLapseOutput := camThread.openMP4Output(timeLapsePath +
+                                "/timeLapse.mp4",
+                                concatInput)
+    if timeLapseOutput == nil || timeLapseOutput.vsOutput == nil {
+        log.Error("Failed to create timelapse output handler %s",
+                        timeLapsePath + "/timeLapse.mp4")
+        camThread.destroyInput(concatInput)
+    }
+    for {
+        var pktIn C.AVPacket
+        readRes := C.int(0)
+        concatInput.mutex.RLock()
+        readRes = C.vs_read_packet(concatInput.vsInput, &pktIn,
+                                       C.bool(false))
+        concatInput.mutex.RUnlock()
+        if readRes == -1  {
+            break
+        }
+        if readRes == 0 {
+            continue
+        }
+        pktOut := C.av_packet_clone(&pktIn)
+        if pktOut == nil {
+            break
+        }
+        timeLapseOutput.mutex.Lock()
+        writeRes := C.vs_write_packet(concatInput.vsInput,
+                                     timeLapseOutput.vsOutput, pktOut,
+                                     C.bool(false))
+        timeLapseOutput.mutex.Unlock()
+        if writeRes == -1 {
+            log.Error("Failed to write the packet to timeLapse.")
+        }
+        C.av_packet_free(&pktOut)
+    }
+    camThread.destroyInput(concatInput)
+    if timeLapseOutput != nil && timeLapseOutput.vsOutput != nil {
+        timeLapseOutput.mutex.Lock()
+        C.vs_destroy_output(timeLapseOutput.vsOutput)
+        timeLapseOutput.mutex.Unlock()
+    }
     camThread.deleteInputSnapshots(videoPath, files)
 }
 
@@ -420,8 +417,6 @@ func (camThread *RTSPCameraThread)executeCameraThreadRoutine() error {
         //check if exit signal is triggered,
         if camThread.isExitFired() {
             //Exit the loop, as user wanted to kill the thread.
-            //create the timelapse video for whatever is present.
-            camThread.destroyInput(camThread.inputHandler)
             break
         }
         if numFramesCopied >= totOutFrame {
