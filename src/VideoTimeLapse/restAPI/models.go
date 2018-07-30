@@ -40,6 +40,7 @@ type JsonCameraInput struct {
     UserId *string               `json:"UserId"`
     Pwd *string                  `json:"Pwd"`
     VideoLenSec uint64           `json:"VideoLenSec"`
+    SnapInterval uint64          `json:"VideoSnapInterval"`
 }
 
 //Allocate memory to all the string fields that needed for the json structure.
@@ -83,5 +84,8 @@ func (jsonCam *JsonCameraInput)ReadJsonData(camRowOut *dataSet.Camera) {
     }
     if jsonCam.VideoLenSec != 0 {
         camRowOut.VideoLenSec = jsonCam.VideoLenSec
+    }
+    if jsonCam.SnapInterval != 0 {
+        camRowOut.SnapInterval = jsonCam.SnapInterval
     }
 }

@@ -43,6 +43,7 @@ type RTSPCameraThread struct {
     uname string
     pwd string
     exitSignal chan bool
+    status dataSet.CameraStatus
     videoPath string
     videoLen uint64 //Length of video to create timelapse.
     videoInterval uint64 //Interval between the video snapshots.
@@ -72,6 +73,7 @@ func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
     camThread.port = cam.Port
     camThread.uname = cam.UserId
     camThread.pwd = cam.Pwd
+    camThread.status = cam.Status
     camThread.exitSignal = make(chan bool)
     camThread.videoPath = conf.VideoPath
     camThread.videoLen = cam.VideoLenSec
@@ -80,8 +82,7 @@ func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
     if _, err = os.Stat(camThread.videoPath); os.IsNotExist(err) {
         err = os.MkdirAll(camThread.videoPath, 0744)
     }
-    //TODO :: read it from DB.
-    camThread.videoInterval = 1
+    camThread.videoInterval = cam.SnapInterval
     if camThread.videoInterval > camThread.videoLen {
         //Interval cannot be more than the total recording duratation.
         camThread.videoInterval = camThread.videoLen
@@ -475,6 +476,10 @@ func(camThread *RTSPCameraThread)RunCameraThread() error {
 // in specific intervals.
 func(camThread *RTSPCameraThread)StopCameraThread() error {
     log := logging.GetLoggerInstance()
+    if camThread.status != dataSet.CAMERA_STREAMING {
+        log.Trace("No thread is running, so no need to exit")
+        return nil
+    }
     camThread.exitSignal <- true
     log.Trace("Exit signal successfully triggered to %s", camThread.name)
     return nil

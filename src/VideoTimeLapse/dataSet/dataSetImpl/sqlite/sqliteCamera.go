@@ -26,6 +26,7 @@ const (
     CAMERA_FIELD_USERID = "userid"
     CAMERA_FIELD_PWD = "pwd"
     CAMERA_FIELD_VIDEOLEN = "videolensec"
+    CAMERA_FIELD_VIDEOSNAPLEN = "snapinterval"
 )
 
 var (
@@ -38,6 +39,7 @@ var (
                  %s INTEGER DEFAULT %d,
                  %s TEXT,
                  %s TEXT,
+                 %s INTEGER DEFAULT %d,
                  %s INTEGER DEFAULT %d)`,
                  CAMERA_TABLE,
                  CAMERA_FIELD_NAME,
@@ -48,11 +50,12 @@ var (
                  CAMERA_FIELD_TYPE, dataSet.CAMERA_TYPE_RTSP,
                  CAMERA_FIELD_USERID,
                  CAMERA_FIELD_PWD,
-                 CAMERA_FIELD_VIDEOLEN, dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC)
+                 CAMERA_FIELD_VIDEOLEN, dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC,
+                 CAMERA_FIELD_VIDEOSNAPLEN, dataSet.CAMERA_DEFAULT_SNAPSHOT_INTERVAL)
     //Create a role entry in table roles
     cameraCreate = fmt.Sprintf(`INSERT INTO %s
-                                (%s, %s, %s, %s, %s, %s, %s, %s)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                                (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                                 CAMERA_TABLE,
                                 CAMERA_FIELD_NAME,
                                 CAMERA_FIELD_IPADDR,
@@ -61,7 +64,8 @@ var (
                                 CAMERA_FIELD_STATUS,
                                 CAMERA_FIELD_USERID,
                                 CAMERA_FIELD_PWD,
-                                CAMERA_FIELD_VIDEOLEN)
+                                CAMERA_FIELD_VIDEOLEN,
+                                CAMERA_FIELD_VIDEOSNAPLEN)
 
     cameraGet = fmt.Sprintf("SELECT * FROM %s WHERE %s=(?)",
                             CAMERA_TABLE,
@@ -73,7 +77,7 @@ var (
                                     CAMERA_FIELD_PORT)
     cameraGetAll = fmt.Sprintf("SELECT * FROM %s", CAMERA_TABLE)
     cameraUpdate = fmt.Sprintf(`UPDATE %s SET %s=(?),%s=(?),%s=(?),
-                                              %s=(?),%s=(?),%s=(?),%s=(?)
+                                              %s=(?),%s=(?),%s=(?),%s=(?),%s=(?)
                                               WHERE %s=(?)`,
                                               CAMERA_TABLE,
                                               CAMERA_FIELD_IPADDR,
@@ -83,6 +87,7 @@ var (
                                               CAMERA_FIELD_USERID,
                                               CAMERA_FIELD_PWD,
                                               CAMERA_FIELD_VIDEOLEN,
+                                              CAMERA_FIELD_VIDEOSNAPLEN,
                                               CAMERA_FIELD_NAME)
     cameraDelete = fmt.Sprintf("DELETE FROM %s WHERE %s=(?)",
                                 CAMERA_TABLE, CAMERA_FIELD_NAME)
@@ -211,12 +216,15 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
         log.Error("Camera entry already present with same IP and port")
         return appErrors.DATA_PRESENT_IN_SYSTEM
     }
-    if camObj.VideoLenSec == 0 {
+    if !camObj.IsVideoLenValid() {
         camObj.VideoLenSec = dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC
+    }
+    if !camObj.IsSnapshotLenValid() {
+        camObj.SnapInterval = dataSet.CAMERA_DEFAULT_SNAPSHOT_INTERVAL
     }
     _, err = conn.Exec(cameraCreate, camObj.Name, camObj.Ipaddr, camObj.Port,
                         camObj.Desc, camObj.Status, camObj.UserId, camObj.Pwd,
-                        camObj.VideoLenSec)
+                        camObj.VideoLenSec, camObj.SnapInterval)
     if err != nil {
         log.Error("Failed to create the camera record %s, err :%s",
                             camObj.Name, err)
@@ -230,22 +238,25 @@ func(camObj *sqlCamera)InsertCameraEntry(conn *sqlx.DB) error {
 func(camObj *sqlCamera)UpdateCameraEntry(conn *sqlx.DB) error {
     var err error
     log := logging.GetLoggerInstance()
-    if camObj.VideoLenSec == 0 {
-        camObj.VideoLenSec = dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC
-    }
-    if res, _ := camObj.IsCameraStatusValid(); res {
-        log.Error("Failed to update the camera entry %s, invalid status",
-                    camObj.Name)
+    if res, _ := camObj.IsCameraStatusValid(); !res {
+        log.Error("Failed to update the camera entry %s, invalid status %d",
+                    camObj.Name, camObj.Status)
         return appErrors.INVALID_INPUT
     }
     if len(camObj.Pwd) != 0 && len(camObj.UserId) == 0 {
         log.Error("Invalid username/pwd, cannot update %s", camObj.Name)
         return appErrors.INVALID_INPUT
     }
+    if !camObj.IsVideoLenValid() {
+        camObj.VideoLenSec = dataSet.CAMERA_DEFAULT_TIMELAPSE_SEC
+    }
+    if !camObj.IsSnapshotLenValid() {
+        camObj.SnapInterval = dataSet.CAMERA_DEFAULT_SNAPSHOT_INTERVAL
+    }
     _, err = conn.Exec(cameraUpdate, camObj.Camera.Ipaddr, camObj.Camera.Port,
                         camObj.Camera.Desc, camObj.Camera.Status,
                         camObj.Camera.UserId, camObj.Camera.Pwd,
-                        camObj.Camera.VideoLenSec,
+                        camObj.Camera.VideoLenSec,camObj.SnapInterval,
                         camObj.Name)
     if err != nil {
         log.Error("Failed to update the camera record err :%s", err)

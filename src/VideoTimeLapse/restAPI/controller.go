@@ -238,6 +238,8 @@ func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
         return
     }
     w.WriteHeader(http.StatusOK)
+    //Update the camerathreadRunner with camera is updated
+    ctrl.signalCameraThreadRunner(camObj)
 }
 
 func (ctrl *controller) getVideos(w http.ResponseWriter, r *http.Request) {
