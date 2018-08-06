@@ -9,6 +9,7 @@ import (
     "unsafe"
     "io/ioutil"
     "VideoTimeLapse/dataSet"
+    "VideoTimeLapse/appErrors"
     "VideoTimeLapse/config"
     "VideoTimeLapse/logging"
 
@@ -60,14 +61,24 @@ const (
 var rtspOnce sync.Once
 //Initialize the camera thread with all the relevant information.
 func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
-                                                   conf *config.AppConfig)(
-                                                   error) {
+                                             conf *config.AppConfig) (error) {
     var err error
     //Register the mux,demux and protocols.
     rtspOnce.Do(func() {
-        C.vs_setup();
+        C.vs_setup()
     })
     camThread.threadLock.Lock()
+    err = camThread.initCameraThread__(cam, conf.VideoPath)
+    camThread.threadLock.Unlock()
+    return err
+}
+
+// Initialize the camera thread with all the relevant parameters.
+// MUST HOLD threadlock before calling this function.
+func (camThread *RTSPCameraThread)initCameraThread__(cam *dataSet.Camera,
+                                                   videoPath string)(
+                                                   error) {
+    var err error
     camThread.name = cam.Name
     camThread.ip = cam.Ipaddr
     camThread.port = cam.Port
@@ -75,7 +86,11 @@ func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
     camThread.pwd = cam.Pwd
     camThread.status = cam.Status
     camThread.exitSignal = make(chan bool)
-    camThread.videoPath = conf.VideoPath
+    if videoPath != "" {
+        camThread.videoPath = videoPath
+    } else if camThread.videoPath == "" {
+        camThread.videoPath = config.DEFAULT_PATH
+    }
     camThread.videoLen = cam.VideoLenSec
     //Create directory for camera streams.
     camThread.videoPath = camThread.videoPath + "/" + camThread.name
@@ -87,7 +102,6 @@ func (camThread *RTSPCameraThread)InitCameraThread(cam *dataSet.Camera,
         //Interval cannot be more than the total recording duratation.
         camThread.videoInterval = camThread.videoLen
     }
-    camThread.threadLock.Unlock()
     return err
 }
 
@@ -480,14 +494,28 @@ func(camThread *RTSPCameraThread)StopCameraThread() error {
         log.Trace("No thread is running, so no need to exit")
         return nil
     }
+    camThread.status = dataSet.CAMERA_OFF
     camThread.exitSignal <- true
     log.Trace("Exit signal successfully triggered to %s", camThread.name)
     return nil
 }
 
 //Can only operate on existing running camera thread.
-func(camThread *RTSPCameraThread)UpdateCameraThread(*dataSet.Camera)(error) {
+func(camThread *RTSPCameraThread)UpdateCameraThread(cam *dataSet.Camera)(error) {
     camThread.threadLock.Lock()
+    log := logging.GetLoggerInstance()
+    log.Trace("Updating the camera thread %s", cam.Name)
+    if camThread.name != cam.Name {
+        log.Error("Cannot update camera input name = %s and thread is %s",
+                            cam.Name, camThread.name)
+        return appErrors.INVALID_INPUT
+    }
+    if camThread.status == dataSet.CAMERA_STREAMING {
+        log.Error("Cannot update camera thread %s, as its active")
+        return appErrors.INVALID_OP
+    }
+    camThread.initCameraThread__(cam, "")
     camThread.threadLock.Unlock()
+    camThread.RunCameraThread()
     return nil
 }

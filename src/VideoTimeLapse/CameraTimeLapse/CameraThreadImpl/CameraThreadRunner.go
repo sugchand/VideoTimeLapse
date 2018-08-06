@@ -80,24 +80,29 @@ func(camRunner *CameraThreadRunner)executeCameraThread(
                                camera.Name, err)
                     return
                 }
-                camMap.RemoveCameraThreadObjInMap(camera.Name)
+                if camera.Status == dataSet.CAMERA_DELETED {
+                    camMap.RemoveCameraThreadObjInMap(camera.Name)
+                }
                 return
             }
-            //Camera thread specific fields are updated.
+            //Camera thread specific fields are updated & is streaming.
+            //camera parameter update are taken into account only when camera
+            // camera is streaming.
             camThread.UpdateCameraThread(camera)
         }
         return
     }
 
-    // Need to create a camera thread if it has status streaming.
-    if camera.Status != dataSet.CAMERA_STREAMING {
-        return
-    }
     err = camThread.InitCameraThread(camera, conf)
     if err != nil {
         log.Error("Failed to initialize the camera thread obj %s, err:%s",
                     camera.Name, err)
         camMap.RemoveCameraThreadObjInMap(camera.Name)
+        return
+    }
+    // Need to start a camera thread if it has status streaming.
+    if camera.Status != dataSet.CAMERA_STREAMING {
+        log.Trace("Streaming is not started on camera thread %s", camera.Name)
         return
     }
     // Camera thread is not present in the system, hence start the thread.

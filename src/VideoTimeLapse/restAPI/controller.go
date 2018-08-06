@@ -77,7 +77,7 @@ func (ctrl *controller) createCamera(w http.ResponseWriter, r *http.Request) {
         log.Error("Failed to close the request.")
     }
     jsonCamObj := new(JsonCameraInput)
-    jsonCamObj.AllocateFields()
+    //jsonCamObj.AllocateFields()
     if err := json.Unmarshal(body, &jsonCamObj); err != nil {
         w.WriteHeader(422)
         log.Error("Failed to Unmarshal the camera input err:%s", err)
@@ -197,7 +197,7 @@ func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
     }
 
     jsonCamObj := new(JsonCameraInput)
-    jsonCamObj.AllocateFields()
+    //jsonCamObj.AllocateFields()
     if err := json.Unmarshal(body, &jsonCamObj); err != nil {
         w.WriteHeader(422)
         log.Error("Failed to Unmarshal the camera input err:%s", err)
@@ -207,11 +207,8 @@ func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
             return
         }
     }
-    if len(*jsonCamObj.Name) == 0 {
-        //Patch request doesnt need to populate all the fields in json.
-        *jsonCamObj.Name = cameraId
-    }
-    if *jsonCamObj.Name != cameraId {
+
+    if jsonCamObj.Name != nil && *jsonCamObj.Name != cameraId {
         //Wrong camera ID
         w.WriteHeader(http.StatusBadRequest)
     }
@@ -222,7 +219,7 @@ func (ctrl *controller) updateCamera(w http.ResponseWriter, r *http.Request) {
     camObj, err = dataObj.GetCamera(cameraId)
     if err != nil {
         log.Error("Failed to get the record, Cannot update the camera %s, err:%s",
-                    *jsonCamObj.Name, err)
+                    cameraId, err)
         w.WriteHeader(http.StatusBadRequest)
         return
     }
