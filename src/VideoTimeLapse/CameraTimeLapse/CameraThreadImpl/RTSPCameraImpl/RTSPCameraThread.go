@@ -8,6 +8,7 @@ import (
     "sort"
     "unsafe"
     "io/ioutil"
+    "path/filepath"
     "VideoTimeLapse/dataSet"
     "VideoTimeLapse/appErrors"
     "VideoTimeLapse/config"
@@ -51,6 +52,12 @@ type RTSPCameraThread struct {
     totOutFrames uint64 //Total number of frames in final timelapse video
     startTime time.Time
     threadLock sync.RWMutex
+    // waitGroup for tracking the completion of snapshot generation.
+    // The snapshots are generated at the predefined time intervals in go
+    // routines parallel.
+    // The thread must wait for all the snapshot generation to
+    // complete before concat/stitching them together as a single video.
+    snapShotJoin sync.WaitGroup
 }
 
 const (
@@ -87,13 +94,13 @@ func (camThread *RTSPCameraThread)initCameraThread__(cam *dataSet.Camera,
     camThread.status = cam.Status
     camThread.exitSignal = make(chan bool)
     if videoPath != "" {
-        camThread.videoPath = videoPath
+        videoDir, _ := filepath.Abs(videoPath)
+        camThread.videoPath = videoDir + "/" + camThread.name
     } else if camThread.videoPath == "" {
-        camThread.videoPath = config.DEFAULT_PATH
+        videoDir, _ := filepath.Abs(config.DEFAULT_PATH)
+        camThread.videoPath = videoDir + "/" + camThread.name
     }
     camThread.videoLen = cam.VideoLenSec
-    //Create directory for camera streams.
-    camThread.videoPath = camThread.videoPath + "/" + camThread.name
     if _, err = os.Stat(camThread.videoPath); os.IsNotExist(err) {
         err = os.MkdirAll(camThread.videoPath, 0744)
     }
@@ -128,6 +135,10 @@ func (camThread *RTSPCameraThread)destroyOutput(output *Output,
     if output.vsOutput == nil {
         return
     }
+    //Snapshot generation is tracked in destroy function, as every snapshot
+    // generation must end with destroy output. So we are considering, a snapshot
+    // generation is complete, when destroy is finished.
+    defer camThread.snapShotJoin.Done()
     //Wait for all writes to complete before triggering the destroy.
     waitWrite.Wait()
     C.vs_destroy_output(output.vsOutput)
@@ -275,6 +286,7 @@ func (camThread *RTSPCameraThread)createVideoSnapshot(fileName string) error {
         go camThread.writePacket(input, output, &pkt, &waitWrite)
         numFrames++
     }
+    camThread.snapShotJoin.Add(1)
     // We dont wanted to block the orignal thread until the destroy finished.
     // destroy will happen only when all the output write completes.
     go camThread.destroyOutput(output, &waitWrite)
@@ -356,13 +368,14 @@ func (camThread *RTSPCameraThread)createTimelapseWithSnapshots(
         log.Error("Failed to open concat file %s", timeLapseList)
         return
     }
-    timeLapseOutput := camThread.openMP4Output(timeLapsePath +
-                                "/timeLapse.mp4",
+    timeLapseFile := timeLapsePath + "/timeLapse.mp4"
+    timeLapseOutput := camThread.openMP4Output(timeLapseFile,
                                 concatInput)
     if timeLapseOutput == nil || timeLapseOutput.vsOutput == nil {
         log.Error("Failed to create timelapse output handler %s",
-                        timeLapsePath + "/timeLapse.mp4")
+                        timeLapseFile)
         camThread.destroyInput(concatInput)
+        return
     }
     for {
         var pktIn C.AVPacket
@@ -439,6 +452,8 @@ func (camThread *RTSPCameraThread)executeCameraThreadRoutine() error {
             //Reset the time to start over the timelapse video.
             log.Trace(`Completed the snapshot generation as %d frames are
                        created, Creating timelapse video`, numFramesCopied)
+            //Wait for all write to complete before stitching.
+            camThread.snapShotJoin.Wait()
             go camThread.createTimelapseWithSnapshots(
                                    camThread.videoPath + "/" +
                                    camThread.startTime.Format(TIME_DIR_FORMAT))
@@ -514,6 +529,9 @@ func(camThread *RTSPCameraThread)UpdateCameraThread(cam *dataSet.Camera)(error) 
         log.Error("Cannot update camera thread %s, as its active")
         return appErrors.INVALID_OP
     }
+    camThread.threadLock.Unlock()
+    camThread.StopCameraThread()
+    camThread.threadLock.Lock()
     camThread.initCameraThread__(cam, "")
     camThread.threadLock.Unlock()
     camThread.RunCameraThread()
