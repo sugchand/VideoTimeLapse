@@ -32,3 +32,8 @@ endif
 	@echo -e "\tRun 'dep ensure' in $(GOSRCPATH) to install missing third party packages\n"
 	$(GO) build $(GCFLAGS) -o $(GOOUTPUTBIN) $(GOSRCPATH)
 	@echo -e "\n\t**** RESULT : $$? : Build completed!!! ****\n\t**** Binary is at $$PWD/bin ****"
+
+tests:
+	@echo -e "\n\tSet 'GOPATH' to '$(GOPATH)'"
+	@echo -e "\tRun 'dep ensure' in $(GOSRCPATH) to install missing third party packages\n"
+	$(GO) test -v $(GOSRCPATH)/...
