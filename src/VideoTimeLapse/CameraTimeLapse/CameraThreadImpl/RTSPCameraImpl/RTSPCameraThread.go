@@ -319,6 +319,65 @@ func (camThread *RTSPCameraThread)deleteInputSnapshots(dir string,
     }
 }
 
+func (camThread *RTSPCameraThread)compactTimeLapseVideo(videoPath string) {
+    log := logging.GetLoggerInstance()
+    input := camThread.openInput("mp4",videoPath)
+    if input == nil || input.vsInput == nil {
+        log.Error("Failed to compact the timelapse video")
+        return
+    }
+    dir, err := filepath.Abs(filepath.Dir(videoPath))
+    if err != nil {
+        log.Error("Failed to get the directory for compact output file")
+        return
+    }
+    outputFile := dir + "/FinalTimeLapse.mp4"
+    output := camThread.openMP4Output(outputFile, input)
+    if output == nil || output.vsOutput == nil {
+        log.Error("Failed to create timelapse output handler %s",
+                        outputFile)
+        camThread.destroyInput(input)
+        return
+    }
+    for {
+        var pktIn C.AVPacket
+        readRes := C.int(0)
+        input.mutex.RLock()
+        readRes = C.vs_read_packet(input.vsInput, &pktIn,
+                                       C.bool(false))
+        input.mutex.RUnlock()
+        if readRes == -1  {
+            log.Trace("Failed to read packets in compact")
+            break
+        }
+        if readRes == 0 {
+            log.Trace("Nothing to read from input in compact")
+            continue
+        }
+        pktOut := C.av_packet_clone(&pktIn)
+        if pktOut == nil {
+            break
+        }
+        output.mutex.Lock()
+        writeRes := C.vs_write_packet_speed(input.vsInput,
+                                     output.vsOutput, pktOut, 4,
+                                     C.bool(false))
+        output.mutex.Unlock()
+        if writeRes == -1 {
+            log.Error("Failed to write the packet to compact timeLapse.")
+            break
+        }
+        C.av_packet_free(&pktOut)
+    }
+    camThread.destroyInput(input)
+    if output != nil && output.vsOutput != nil {
+        output.mutex.Lock()
+        log.Trace("Destroying outot......")
+        C.vs_destroy_output(output.vsOutput)
+        output.mutex.Unlock()
+    }
+}
+
 // Function to create timelapse video from snapshots.
 // This function go through every snapshot files and stitch together
 // to generate final snapshot video
@@ -411,6 +470,7 @@ func (camThread *RTSPCameraThread)createTimelapseWithSnapshots(
         timeLapseOutput.mutex.Unlock()
     }
     camThread.deleteInputSnapshots(videoPath, files)
+    camThread.compactTimeLapseVideo(timeLapseFile)
 }
 
 // Goroutine to execute the camera thread function.

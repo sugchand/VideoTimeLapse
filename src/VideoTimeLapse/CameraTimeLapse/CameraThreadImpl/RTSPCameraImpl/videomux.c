@@ -179,7 +179,7 @@ vs_open_output(const char * const output_format_name,
         av_dump_format(output->format_ctx, 0, output_url, 1);
     }
 
-
+    out_stream->codecpar->codec_tag = 0;
     // Open output file.
     if (avio_open(&output->format_ctx->pb, output_url, AVIO_FLAG_WRITE) < 0) {
         printf("unable to open output file\n");
@@ -312,6 +312,52 @@ vs_read_packet(const struct VSInput * input, AVPacket * const pkt,
     return 1;
 }
 
+/* Update the timestamp values in the stream.
+ * When speed_rate is provided, the stream is speed-up/speed-down.
+ * Otherwise it assigned with right value set.
+ */
+void
+vs_update_packet_timestamp(AVStream * const in_stream,
+                           AVStream * const out_stream, AVPacket * const pkt,
+                           float speed_rate, int64_t last_dts)
+{
+    if (speed_rate != 0) {
+        //Update the values as provided in speed-rate.
+        out_stream->time_base.den /= speed_rate;
+        pkt->pts = pkt->pts ? pkt->pts/speed_rate : pkt->pts;
+        pkt->dts = pkt->dts ? pkt->dts/speed_rate :pkt->dts;
+        if (!pkt->dts || pkt->dts <= last_dts) {
+            if (last_dts == AV_NOPTS_VALUE) {
+                /* This is very unlikely situation. ,
+                 * issue from first packet??
+                 */
+                pkt->dts = pkt->pts = last_dts = 0;
+            }
+            else {
+                pkt->dts = pkt->pts = last_dts + 1;
+            }
+        }
+    }
+    else {
+        //Use default set of time values.
+        if (pkt->pts == AV_NOPTS_VALUE) {
+            pkt->pts = 0;
+        } else {
+            pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base,
+                 out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
+        }
+
+        if (pkt->dts == AV_NOPTS_VALUE) {
+            pkt->dts = 0;
+        } else {
+            pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base,
+                out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
+        }
+    }
+    pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base,
+            out_stream->time_base);
+}
+
 // We change the packet's pts, dts, duration, pos.
 //
 // We do not unref it.
@@ -320,8 +366,9 @@ vs_read_packet(const struct VSInput * input, AVPacket * const pkt,
 // -1 if error
 // 1 if we wrote the packet
 int
-vs_write_packet(const struct VSInput * const input,
-        struct VSOutput * const output, AVPacket * const pkt, const bool verbose)
+__vs_write_packet(const struct VSInput * const input,
+        struct VSOutput * const output, AVPacket * const pkt, float speed,
+        const bool verbose)
 {
     if (!input || !output || !pkt) {
         printf("%s\n", strerror(EINVAL));
@@ -419,22 +466,8 @@ vs_write_packet(const struct VSInput * const input,
     // the timestamps properly
     //
     // [mp4 @ 0x55688397bc40] Encoder did not produce proper pts, making some up.
-    if (pkt->pts == AV_NOPTS_VALUE) {
-        pkt->pts = 0;
-    } else {
-        pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base,
-                out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-    }
+    vs_update_packet_timestamp(in_stream, out_stream, pkt, speed,output->last_dts);
 
-    if (pkt->dts == AV_NOPTS_VALUE) {
-        pkt->dts = 0;
-    } else {
-        pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base,
-                out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-    }
-
-    pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base,
-            out_stream->time_base);
     pkt->pos = -1;
 
 
@@ -451,7 +484,7 @@ vs_write_packet(const struct VSInput * const input,
 
     // av_interleaved_write_frame() works too, but I don't think it is needed.
     // Using av_write_frame() skips buffering.
-    const int write_res = av_write_frame(output->format_ctx, pkt);
+    const int write_res = av_interleaved_write_frame(output->format_ctx, pkt);
     if (write_res != 0) {
         char error_buf[256];
         memset(error_buf, 0, 256);
@@ -461,6 +494,22 @@ vs_write_packet(const struct VSInput * const input,
     }
 
     return 1;
+}
+
+int
+vs_write_packet(const struct VSInput * const input,
+        struct VSOutput * const output, AVPacket * const pkt, const bool verbose)
+{
+    return __vs_write_packet(input, output, pkt, 0, verbose);
+}
+
+/* Write a packet to output stream by speeding up/down. */
+int
+vs_write_packet_speed(const struct VSInput * const input,
+        struct VSOutput * const output, AVPacket * const pkt, const float speed,
+        const bool verbose)
+{
+    return __vs_write_packet(input, output, pkt, speed, verbose);
 }
 
 static void
